@@ -1,50 +1,22 @@
 -- ANDESITE ALLOY FACTORY UI
--- CC:Tweaked + Create Item Vaults + optional Redstone Relay
--- Minecraft 1.21.1 friendly. English labels only to avoid terminal encoding issues.
-
-------------------------------------------------------------
--- CONFIG
-------------------------------------------------------------
+-- CC:Tweaked + Create Item Vaults + Redstone Relay line statuses
+-- For Minecraft terminals: English text only.
 
 local CONFIG = {
   monitor = "monitor_1",
   monitorScale = 0.5,
   updateInterval = 2,
-
-  -- Optional. If connected, this reads real stop signals from Create Redstone Link receivers.
-  -- Put duplicated Create Redstone Link receivers near the relay with the same frequencies as your line stops.
-  redstoneRelay = "redstone_relay_0",
-  useRelayInputs = true,
-
-  -- Create Item Vault capacity. Default Create value: 1 vault block = 20 stacks = 1280 items.
-  itemsPerVaultBlock = 1280,
-
-  -- Rates are calculated from storage changes over this window.
+  redstoneRelay = "redstone_relay_1",
   rateWindowSeconds = 60,
+  itemsPerVaultBlock = 1280,
   showDebugExtraItems = true,
 }
 
 local VAULTS = {
-  rawCobble = {
-    name = "create:item_vault_4",
-    label = "Raw Cobble Vault",
-    blocks = 6 * 2 * 2,
-  },
-  craftBuffer = {
-    name = "create:item_vault_2",
-    label = "Craft Buffer",
-    blocks = 3 * 3 * 4,
-  },
-  diorite = {
-    name = "create:item_vault_3",
-    label = "Diorite Vault",
-    blocks = 1,
-  },
-  alloy = {
-    name = "create:item_vault_1",
-    label = "Alloy Output",
-    blocks = 1 * 3,
-  },
+  rawCobble = { name = "create:item_vault_4", label = "Raw Cobble Vault", blocks = 6 * 2 * 2 },
+  craftBuffer = { name = "create:item_vault_2", label = "Craft Buffer", blocks = 3 * 3 * 4 },
+  diorite = { name = "create:item_vault_3", label = "Diorite Vault", blocks = 1 },
+  alloy = { name = "create:item_vault_1", label = "Alloy Output", blocks = 1 * 3 },
 }
 
 local ID = {
@@ -56,34 +28,34 @@ local ID = {
 }
 
 -- Recipe chain:
--- 1 Andesite Alloy = 2 Andesite + 2 Iron Nuggets
--- 2 Andesite      = 1 Cobblestone + 1 Diorite
--- 1 Diorite       = 2 Cobblestone + 2 Quartz
+-- 1 Alloy = 2 Andesite + 2 Iron Nuggets
+-- 2 Andesite = 1 Cobblestone + 1 Diorite
+-- 1 Diorite = 2 Cobblestone + 2 Quartz
 -- Full chain: 1 Alloy = 3 Cobble + 2 Quartz + 2 Iron Nuggets
 local LIMITS = {
   alloyStop = 1088,
-
-  -- Raw cobble vault is 30720 items. 70% = 21504 items = 336 stacks.
   cobbleGeneratorStopRatio = 0.70,
-
-  -- Craft buffer balance. Ratio 3 : 2 : 2.
   bufferCobbleMax = 18000,
   bufferQuartzMax = 12000,
   bufferIronMax = 12000,
-
   dioriteMax = 1280,
 }
 
--- Mapping for Redstone Relay inputs.
--- If a side receives redstone, the line is displayed as STOPPED.
--- Edit these sides to match how you wire your Redstone Relay.
+-- IMPORTANT: line status is based on real redstone signals.
+-- Redstone signal ON on the relay side means that line is STOPPED.
+-- Your current wiring:
+-- front = cobble line to main buffer
+-- right = cobblestone generator / drills for raw cobble
+-- top   = diorite + andesite alloy assembly after main buffer
+-- back  = quartz generation line
+-- left  = iron nuggets line
 local LINE_INPUTS = {
-  alloy = "right",
-  cobbleGenerator = "left",
   cobbleLine = "front",
+  cobbleGenerator = "right",
+  alloy = "top",
+  dioriteLine = "top",
   quartzLine = "back",
-  ironLine = "top",
-  dioriteLine = "bottom",
+  ironLine = "left",
 }
 
 local KNOWN_ITEMS = {
@@ -94,25 +66,16 @@ local KNOWN_ITEMS = {
   [ID.alloy] = true,
 }
 
-------------------------------------------------------------
--- DERIVED VALUES
-------------------------------------------------------------
-
 for _, vault in pairs(VAULTS) do
   vault.capacity = vault.blocks * CONFIG.itemsPerVaultBlock
-  vault.stacks = vault.capacity / 64
 end
 
-local RAW_COBBLE_STOP_LIMIT = math.floor(
-  VAULTS.rawCobble.capacity * LIMITS.cobbleGeneratorStopRatio + 0.5
-)
-
-------------------------------------------------------------
--- SCREEN HELPERS
-------------------------------------------------------------
+local RAW_COBBLE_STOP_LIMIT = math.floor(VAULTS.rawCobble.capacity * LIMITS.cobbleGeneratorStopRatio + 0.5)
 
 local screen = term
 local screenName = "terminal"
+local relay = nil
+local rateHistory = {}
 
 local function setupScreen()
   if CONFIG.monitor and peripheral.isPresent(CONFIG.monitor) then
@@ -125,6 +88,14 @@ local function setupScreen()
   end
 end
 
+local function setupRelay()
+  if CONFIG.redstoneRelay and peripheral.isPresent(CONFIG.redstoneRelay) then
+    relay = peripheral.wrap(CONFIG.redstoneRelay)
+  else
+    relay = nil
+  end
+end
+
 local function clearScreen()
   screen.setBackgroundColor(colors.black)
   screen.setTextColor(colors.white)
@@ -133,7 +104,7 @@ local function clearScreen()
 end
 
 local function clearLine(y)
-  local w, _ = screen.getSize()
+  local w = ({ screen.getSize() })[1]
   screen.setBackgroundColor(colors.black)
   screen.setCursorPos(1, y)
   screen.write(string.rep(" ", w))
@@ -149,13 +120,9 @@ end
 
 local function fmt(n)
   n = tonumber(n) or 0
-  if n >= 1000000 then
-    return string.format("%.1fM", n / 1000000)
-  elseif n >= 10000 then
-    return string.format("%.1fk", n / 1000)
-  else
-    return tostring(math.floor(n + 0.5))
-  end
+  if n >= 1000000 then return string.format("%.1fM", n / 1000000) end
+  if n >= 10000 then return string.format("%.1fk", n / 1000) end
+  return tostring(math.floor(n + 0.5))
 end
 
 local function fmtValue(value, maxValue)
@@ -163,9 +130,7 @@ local function fmtValue(value, maxValue)
 end
 
 local function nowSeconds()
-  if os.epoch then
-    return os.epoch("utc") / 1000
-  end
+  if os.epoch then return os.epoch("utc") / 1000 end
   return os.clock()
 end
 
@@ -192,12 +157,8 @@ end
 
 local function drawSolidBar(x, y, width, value, maxValue, fillColor)
   if width <= 0 then return end
-
   local ratio = 0
-  if maxValue and maxValue > 0 then
-    ratio = math.min(value / maxValue, 1)
-  end
-
+  if maxValue and maxValue > 0 then ratio = math.min(value / maxValue, 1) end
   local filled = math.floor(width * ratio + 0.5)
   local empty = width - filled
 
@@ -215,17 +176,13 @@ local function drawTitle(y, title)
 end
 
 local function drawMeterLine(y, label, status, value, maxValue, barColor, rightText)
-  local w, _ = screen.getSize()
-
-  local labelX = 2
-  local statusX = 26
-  local barX = 37
+  local w = ({ screen.getSize() })[1]
+  local labelX, statusX, barX = 2, 26, 37
   local valueX = math.max(62, w - 24)
   local barW = valueX - barX - 2
   if barW < 8 then barW = 8 end
 
   local color = colorForStatus(status)
-
   clearLine(y)
   writeAt(labelX, y, string.sub(label, 1, 22), colors.white)
   writeAt(statusX, y, string.format("%-8s", status), color)
@@ -239,14 +196,8 @@ end
 
 local function drawSmallBox(x, y, text, status)
   local bg = colorForStatus(status)
-  local fg = colors.black
-  local label = " " .. text .. " "
-  writeAt(x, y, label, fg, bg)
+  writeAt(x, y, " " .. text .. " ", colors.black, bg)
 end
-
-------------------------------------------------------------
--- VAULT READING
-------------------------------------------------------------
 
 local function readVault(vault)
   local data = {
@@ -292,12 +243,6 @@ local function countItem(vaultData, itemId)
   return vaultData.items[itemId] or 0
 end
 
-------------------------------------------------------------
--- RATES
-------------------------------------------------------------
-
-local rateHistory = {}
-
 local function updateRate(key, value)
   local t = nowSeconds()
   local hist = rateHistory[key]
@@ -307,18 +252,15 @@ local function updateRate(key, value)
   end
 
   table.insert(hist, { t = t, v = value })
-
   while #hist > 2 and (t - hist[1].t) > CONFIG.rateWindowSeconds do
     table.remove(hist, 1)
   end
 
   if #hist < 2 then return nil end
-
   local first = hist[1]
   local last = hist[#hist]
   local dt = last.t - first.t
   if dt < 10 then return nil end
-
   return (last.v - first.v) / dt * 60
 end
 
@@ -326,43 +268,23 @@ local function fmtRate(rate)
   if rate == nil then return "--/min" end
   local sign = ""
   if rate > 0.49 then sign = "+" end
-
-  local absRate = math.abs(rate)
-  if absRate >= 1000 then
-    return sign .. string.format("%.1fk/min", rate / 1000)
-  end
+  if math.abs(rate) >= 1000 then return sign .. string.format("%.1fk/min", rate / 1000) end
   return sign .. string.format("%.0f/min", rate)
 end
 
-------------------------------------------------------------
--- RELAY INPUTS
-------------------------------------------------------------
-
-local relay = nil
-
-local function setupRelay()
-  relay = nil
-  if CONFIG.useRelayInputs and CONFIG.redstoneRelay and peripheral.isPresent(CONFIG.redstoneRelay) then
-    relay = peripheral.wrap(CONFIG.redstoneRelay)
-  end
+local function relaySignal(side)
+  if not relay or not side then return false end
+  local ok, value = pcall(function() return relay.getInput(side) end)
+  return ok and value == true
 end
 
-local function isRelayStopped(key)
-  if not relay then return false end
+local function lineStatus(key)
+  if not relay then return "OFFLINE" end
   local side = LINE_INPUTS[key]
-  if not side then return false end
-
-  local ok, value = pcall(function()
-    return relay.getInput(side)
-  end)
-
-  if not ok then return false end
-  return value == true
+  if not side then return "OFFLINE" end
+  if relaySignal(side) then return "STOPPED" end
+  return "RUNNING"
 end
-
-------------------------------------------------------------
--- FACTORY LOGIC
-------------------------------------------------------------
 
 local function possibleReadyAlloy(bufferCobble, diorite, ironNugget)
   -- 1 Alloy = 1 Cobble + 1 Diorite + 2 Iron Nuggets
@@ -379,73 +301,65 @@ local function bottleneck(bufferCobble, quartz, ironNugget)
   local byQuartz = math.floor(quartz / 2)
   local byIron = math.floor(ironNugget / 2)
   local m = math.min(byCobble, byQuartz, byIron)
-
   if m == byCobble then return "COBBLE" end
   if m == byQuartz then return "QUARTZ" end
   return "IRON NUGGET"
 end
 
-local function statusLine(key, computedStatus)
-  if isRelayStopped(key) then return "STOPPED" end
-  return computedStatus
-end
-
 local function getOverall(alloyLine, genLine, cobbleLine, quartzLine, ironLine, need)
-  if alloyLine == "STOPPED" then return "ALLOY OUTPUT FULL" end
-  if genLine == "STOPPED" then return "COBBLE GENERATOR FULL" end
-  if ironLine == "LOW" or need == "IRON NUGGET" then return "WAITING FOR IRON" end
-  if quartzLine == "LOW" or need == "QUARTZ" then return "WAITING FOR QUARTZ" end
-  if cobbleLine == "LOW" or need == "COBBLE" then return "WAITING FOR COBBLE" end
+  if not relay then return "RELAY OFFLINE" end
+  if alloyLine == "STOPPED" then return "ALLOY / DIORITE STOPPED" end
+  if genLine == "STOPPED" then return "COBBLE GENERATOR STOPPED" end
+  if cobbleLine == "STOPPED" then return "COBBLE LINE STOPPED" end
+  if quartzLine == "STOPPED" then return "QUARTZ LINE STOPPED" end
+  if ironLine == "STOPPED" then return "IRON LINE STOPPED" end
+  if need == "IRON NUGGET" then return "NEEDS IRON" end
+  if need == "QUARTZ" then return "NEEDS QUARTZ" end
+  if need == "COBBLE" then return "NEEDS COBBLE" end
   return "RUNNING"
 end
 
-------------------------------------------------------------
--- FLOW MAP AND DEBUG
-------------------------------------------------------------
-
 local function drawFlowMap(y, statuses)
-  clearLine(y)
-  drawSmallBox(2, y, "COBBLE GEN", statuses.generator)
-  writeAt(17, y, "->", colors.gray)
-  drawSmallBox(21, y, "RAW COBBLE", statusByFill(statuses.rawCobbleValue, RAW_COBBLE_STOP_LIMIT))
+  for i = 0, 8 do clearLine(y + i) end
 
-  clearLine(y + 1)
-  writeAt(7, y + 1, "|", colors.gray)
-  writeAt(17, y + 1, "+->", colors.gray)
-  drawSmallBox(21, y + 1, "COBBLE", statuses.cobble)
-  writeAt(36, y + 1, "-----+", colors.gray)
+  drawSmallBox(37, y, "COBBLE GENERATOR", statuses.generator)
+  writeAt(46, y + 1, "v", colors.gray)
+  drawSmallBox(39, y + 2, "RAW COBBLE", statuses.raw)
 
-  clearLine(y + 2)
-  writeAt(7, y + 2, "|", colors.gray)
-  writeAt(17, y + 2, "+->", colors.gray)
-  drawSmallBox(21, y + 2, "QUARTZ", statuses.quartz)
-  writeAt(36, y + 2, "->", colors.gray)
-  drawSmallBox(40, y + 2, "DIORITE", statuses.diorite)
-  writeAt(54, y + 2, "->", colors.gray)
-  drawSmallBox(58, y + 2, "ALLOY", statuses.alloy)
-  writeAt(70, y + 2, "->", colors.gray)
-  drawSmallBox(74, y + 2, "OUTPUT", statuses.output)
+  writeAt(18, y + 3, "/", colors.gray)
+  writeAt(47, y + 3, "|", colors.gray)
+  writeAt(75, y + 3, "\\", colors.gray)
 
-  clearLine(y + 3)
-  writeAt(7, y + 3, "|", colors.gray)
-  writeAt(17, y + 3, "+->", colors.gray)
-  drawSmallBox(21, y + 3, "IRON", statuses.iron)
-  writeAt(36, y + 3, "-----+", colors.gray)
+  drawSmallBox(3, y + 4, "IRON NUGGETS LINE", statuses.iron)
+  drawSmallBox(35, y + 4, "QUARTZ GENERATION", statuses.quartz)
+  drawSmallBox(66, y + 4, "COBBLE TO BUFFER", statuses.cobble)
 
-  return y + 4
+  writeAt(22, y + 5, "\\", colors.gray)
+  writeAt(47, y + 5, "|", colors.gray)
+  writeAt(73, y + 5, "/", colors.gray)
+
+  drawSmallBox(35, y + 6, "MAIN BUFFER", statuses.buffer)
+
+  writeAt(37, y + 7, "/", colors.gray)
+  writeAt(57, y + 7, "\\", colors.gray)
+
+  drawSmallBox(14, y + 8, "DIORITE", statuses.diorite)
+  writeAt(28, y + 8, "---------------->", colors.gray)
+  drawSmallBox(49, y + 8, "ANDESITE ALLOY", statuses.alloy)
+  writeAt(68, y + 8, "->", colors.gray)
+  drawSmallBox(72, y + 8, "OUTPUT", statuses.output)
+
+  return y + 9
 end
 
 local function drawDebugVault(y, vault)
-  local _, h = screen.getSize()
+  local h = ({ screen.getSize() })[2]
   if y > h then return y end
 
   local extras = {}
   for id, count in pairs(vault.items or {}) do
-    if not KNOWN_ITEMS[id] then
-      table.insert(extras, { id = id, count = count })
-    end
+    if not KNOWN_ITEMS[id] then table.insert(extras, { id = id, count = count }) end
   end
-
   table.sort(extras, function(a, b) return a.count > b.count end)
 
   clearLine(y)
@@ -456,7 +370,6 @@ local function drawDebugVault(y, vault)
 
   writeAt(2, y, vault.label .. ": extra items", colors.orange)
   y = y + 1
-
   for i = 1, math.min(#extras, 4) do
     if y > h then break end
     clearLine(y)
@@ -464,13 +377,8 @@ local function drawDebugVault(y, vault)
     writeAt(50, y, fmt(extras[i].count), colors.lightBlue)
     y = y + 1
   end
-
   return y
 end
-
-------------------------------------------------------------
--- MAIN DASHBOARD
-------------------------------------------------------------
 
 local function drawDashboard()
   setupRelay()
@@ -491,12 +399,12 @@ local function drawDashboard()
   local fullChainAlloy = possibleFullChainAlloy(bufferCobble, bufferQuartz, bufferIron)
   local need = bottleneck(bufferCobble, bufferQuartz, bufferIron)
 
-  local alloyLine = statusLine("alloy", alloy >= LIMITS.alloyStop and "STOPPED" or (readyAlloy <= 0 and "WAITING" or "RUNNING"))
-  local generatorLine = statusLine("cobbleGenerator", rawCobble >= RAW_COBBLE_STOP_LIMIT and "STOPPED" or "RUNNING")
-  local cobbleLine = statusLine("cobbleLine", bufferCobble >= LIMITS.bufferCobbleMax and "STOPPED" or statusByFill(bufferCobble, LIMITS.bufferCobbleMax))
-  local quartzLine = statusLine("quartzLine", bufferQuartz >= LIMITS.bufferQuartzMax and "STOPPED" or statusByFill(bufferQuartz, LIMITS.bufferQuartzMax))
-  local ironLine = statusLine("ironLine", bufferIron >= LIMITS.bufferIronMax and "STOPPED" or statusByFill(bufferIron, LIMITS.bufferIronMax))
-  local dioriteLine = statusLine("dioriteLine", diorite >= LIMITS.dioriteMax and "STOPPED" or statusByFill(diorite, LIMITS.dioriteMax))
+  local alloyLine = lineStatus("alloy")
+  local generatorLine = lineStatus("cobbleGenerator")
+  local cobbleLine = lineStatus("cobbleLine")
+  local quartzLine = lineStatus("quartzLine")
+  local ironLine = lineStatus("ironLine")
+  local dioriteLine = lineStatus("dioriteLine")
 
   local state = getOverall(alloyLine, generatorLine, cobbleLine, quartzLine, ironLine, need)
 
@@ -508,39 +416,33 @@ local function drawDashboard()
   local rateAlloy = updateRate("alloy", alloy)
 
   clearScreen()
-
   local w, h = screen.getSize()
   local timeText = textutils.formatTime(os.time(), true)
 
   writeAt(2, 1, "ANDESITE ALLOY FACTORY", colors.cyan)
   writeAt(math.max(2, w - #timeText - 1), 1, timeText, colors.gray)
-
   writeAt(2, 2, "Status:", colors.white)
-  local stateColor = colors.orange
-  if state == "RUNNING" then stateColor = colors.lime end
-  if state == "ALLOY OUTPUT FULL" then stateColor = colors.red end
-  writeAt(11, 2, state, stateColor)
-
+  writeAt(11, 2, state, state == "RUNNING" and colors.lime or colors.orange)
   writeAt(2, 3, "Recipe: 3 Cobble + 2 Quartz + 2 Iron Nugget = 1 Alloy", colors.gray)
-  writeAt(2, 4, "Relay: " .. (relay and CONFIG.redstoneRelay or "not connected / disabled"), relay and colors.green or colors.gray)
+  writeAt(2, 4, "Relay: " .. (relay and CONFIG.redstoneRelay or "not connected"), relay and colors.green or colors.red)
 
   local y = 6
-
   drawTitle(y, "FLOW MAP")
   y = y + 1
   y = drawFlowMap(y, {
     generator = generatorLine,
+    raw = statusByFill(rawCobble, RAW_COBBLE_STOP_LIMIT),
     cobble = cobbleLine,
     quartz = quartzLine,
     iron = ironLine,
+    buffer = statusByFill(buffer.total, buffer.capacity),
     diorite = dioriteLine,
     alloy = alloyLine,
     output = alloy >= LIMITS.alloyStop and "FULL" or "OK",
-    rawCobbleValue = rawCobble,
   })
   y = y + 1
 
-  drawTitle(y, "PRODUCTION LINES")
+  drawTitle(y, "PRODUCTION LINES - REAL RELAY SIGNALS")
   y = y + 1
   drawMeterLine(y, "Andesite Alloy", alloyLine, alloy, LIMITS.alloyStop, colorForStatus(alloyLine), fmtRate(rateAlloy)); y = y + 1
   drawMeterLine(y, "Cobblestone Generator", generatorLine, rawCobble, RAW_COBBLE_STOP_LIMIT, colorForStatus(generatorLine), fmtRate(rateRawCobble)); y = y + 1
@@ -592,14 +494,12 @@ local function drawDashboard()
   clearLine(h)
   if #errors > 0 then
     writeAt(2, h, "ERROR: " .. errors[1], colors.red)
+  elseif not relay then
+    writeAt(2, h, "ERROR: Relay not connected. Expected " .. CONFIG.redstoneRelay, colors.red)
   else
-    writeAt(2, h, "All vaults connected | Rates are 1 min average | Limits display current line logic", colors.green)
+    writeAt(2, h, "All vaults connected | Line status = Redstone Relay signals", colors.green)
   end
 end
-
-------------------------------------------------------------
--- MAIN LOOP
-------------------------------------------------------------
 
 setupScreen()
 
