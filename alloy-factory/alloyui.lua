@@ -1,13 +1,13 @@
 -- ANDESITE ALLOY FACTORY UI
 -- CC:Tweaked + Create Item Vaults + Redstone Relay line statuses
 -- Dual monitor layout:
---   monitor_5 = left 4x4 flow map
---   monitor_6 = right 5x4 main dashboard
+--   monitor_6 = FLOW MAP
+--   monitor_5 = MAIN DASHBOARD
 -- Storage nodes are neutral. Only production lines are colored by relay status.
 
 local CONFIG = {
-  mapMonitor = "monitor_5",
-  mainMonitor = "monitor_6",
+  mapMonitor = "monitor_6",
+  mainMonitor = "monitor_5",
   monitorScale = 0.5,
   updateInterval = 2,
   redstoneRelay = "redstone_relay_1",
@@ -86,9 +86,7 @@ local relay = nil
 local function wrapMonitor(name)
   if name and peripheral.isPresent(name) then
     local p = peripheral.wrap(name)
-    if p and p.setTextScale then
-      p.setTextScale(CONFIG.monitorScale)
-    end
+    if p and p.setTextScale then p.setTextScale(CONFIG.monitorScale) end
     return p
   end
   return nil
@@ -134,9 +132,7 @@ local function writeAt(x, y, text, fg, bg)
   local w, h = size()
   if x < 1 or y < 1 or x > w or y > h then return end
   local s = tostring(text)
-  if x + #s - 1 > w then
-    s = string.sub(s, 1, w - x + 1)
-  end
+  if x + #s - 1 > w then s = string.sub(s, 1, w - x + 1) end
   screen.setBackgroundColor(bg or colors.black)
   screen.setTextColor(fg or colors.white)
   screen.setCursorPos(x, y)
@@ -247,15 +243,7 @@ end
 ------------------------------------------------------------
 
 local function readVault(vault)
-  local data = {
-    ok = false,
-    name = vault.name,
-    label = vault.label,
-    capacity = vault.capacity,
-    total = 0,
-    items = {},
-    error = nil,
-  }
+  local data = { ok = false, name = vault.name, label = vault.label, capacity = vault.capacity, total = 0, items = {}, error = nil }
 
   if not peripheral.isPresent(vault.name) then
     data.error = "not connected"
@@ -384,14 +372,10 @@ end
 -- MAP SCREEN
 ------------------------------------------------------------
 
-local function drawMapBoxCentered(cx, y, text, isLine, status)
+local function centerText(cx, y, text, line, status)
   local label = " " .. text .. " "
   local x = math.floor(cx - #label / 2)
-  if isLine then
-    drawLineBox(x, y, text, status)
-  else
-    drawStorageBox(x, y, text)
-  end
+  if line then drawLineBox(x, y, text, status) else drawStorageBox(x, y, text) end
 end
 
 local function drawMapScreen(d)
@@ -399,47 +383,45 @@ local function drawMapScreen(d)
   useScreen(mapScreen)
   clearScreen()
   local w, h = size()
-
-  writeAt(2, 1, "FLOW MAP", colors.yellow)
-  writeAt(math.max(2, w - 13), 1, d.state, d.state == "RUNNING" and colors.lime or colors.orange)
-
   local cx = math.floor(w / 2)
   local y = 3
 
-  drawMapBoxCentered(cx, y, "COBBLE GENERATOR", true, d.lines.generator)
+  writeAt(2, 1, "FLOW MAP", colors.yellow)
+  writeAt(math.max(2, w - #d.state - 1), 1, d.state, d.state == "RUNNING" and colors.lime or colors.orange)
+
+  centerText(cx, y, "COBBLE GENERATOR", true, d.lines.generator)
   writeAt(cx, y + 1, "v", colors.gray)
-  drawMapBoxCentered(cx, y + 2, "RAW COBBLE", false)
+  centerText(cx, y + 2, "RAW COBBLE", false)
 
   writeAt(cx - 18, y + 3, "/", colors.gray)
   writeAt(cx, y + 3, "|", colors.gray)
   writeAt(cx + 18, y + 3, "\\", colors.gray)
 
-  drawMapBoxCentered(cx - 24, y + 4, "IRON NUGGETS", true, d.lines.iron)
-  drawMapBoxCentered(cx, y + 4, "QUARTZ", true, d.lines.quartz)
-  drawMapBoxCentered(cx + 24, y + 4, "COBBLE", true, d.lines.cobble)
+  centerText(cx - 24, y + 4, "IRON", true, d.lines.iron)
+  centerText(cx, y + 4, "QUARTZ", true, d.lines.quartz)
+  centerText(cx + 24, y + 4, "COBBLE", true, d.lines.cobble)
 
   writeAt(cx - 18, y + 5, "\\", colors.gray)
   writeAt(cx, y + 5, "|", colors.gray)
   writeAt(cx + 18, y + 5, "/", colors.gray)
 
-  drawMapBoxCentered(cx, y + 6, "MAIN BUFFER", false)
+  centerText(cx, y + 6, "MAIN BUFFER", false)
 
-  writeAt(cx - 12, y + 7, "/", colors.gray)
-  writeAt(cx + 12, y + 7, "\\", colors.gray)
+  writeAt(cx - 13, y + 7, "/", colors.gray)
+  writeAt(cx + 13, y + 7, "\\", colors.gray)
 
-  drawMapBoxCentered(cx - 20, y + 8, "DIORITE LINE", true, d.lines.diorite)
-  writeAt(cx - 9, y + 8, "---------->", colors.gray)
-  drawMapBoxCentered(cx + 15, y + 8, "ALLOY", true, d.lines.alloy)
-  writeAt(cx + 24, y + 8, "->", colors.gray)
-  drawMapBoxCentered(cx + 34, y + 8, "OUTPUT", false)
+  centerText(cx - 21, y + 8, "DIORITE", true, d.lines.diorite)
+  writeAt(cx - 11, y + 8, "---------->", colors.gray)
+  centerText(cx + 15, y + 8, "ALLOY", true, d.lines.alloy)
+  writeAt(cx + 23, y + 8, "->", colors.gray)
+  centerText(cx + 32, y + 8, "OUTPUT", false)
 
-  local bottomY = h - 5
-  if bottomY > y + 10 then
-    writeAt(2, bottomY, "LEGEND", colors.yellow)
-    drawLineBox(2, bottomY + 1, "RUNNING", "RUNNING")
-    drawLineBox(14, bottomY + 1, "STOPPED", "STOPPED")
-    drawStorageBox(27, bottomY + 1, "STORAGE")
-    writeAt(2, bottomY + 3, "Red = stopped by relay signal", colors.gray)
+  local legendY = h - 4
+  if legendY > y + 9 then
+    writeAt(2, legendY, "LEGEND", colors.yellow)
+    drawLineBox(2, legendY + 1, "RUNNING", "RUNNING")
+    drawLineBox(14, legendY + 1, "STOPPED", "STOPPED")
+    drawStorageBox(27, legendY + 1, "STORAGE")
   end
 end
 
