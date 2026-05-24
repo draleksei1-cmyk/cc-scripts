@@ -230,14 +230,6 @@ local function drawStorageMeter(y, label, value, maxValue, fillColor)
   writeAt(valueX, y, fmtValue(value, maxValue), colors.lightGray)
 end
 
-local function drawStorageBox(x, y, text)
-  writeAt(x, y, " " .. text .. " ", colors.black, colors.lightGray)
-end
-
-local function drawLineBox(x, y, text, status)
-  writeAt(x, y, " " .. text .. " ", colors.black, colorForStatus(status))
-end
-
 ------------------------------------------------------------
 -- DATA
 ------------------------------------------------------------
@@ -372,56 +364,143 @@ end
 -- MAP SCREEN
 ------------------------------------------------------------
 
-local function centerText(cx, y, text, line, status)
-  local label = " " .. text .. " "
-  local x = math.floor(cx - #label / 2)
-  if line then drawLineBox(x, y, text, status) else drawStorageBox(x, y, text) end
+local function fillRect(x, y, w, h, bg)
+  local sw, sh = size()
+  if w <= 0 or h <= 0 then return end
+  local line = string.rep(" ", w)
+  screen.setBackgroundColor(bg)
+  for yy = y, y + h - 1 do
+    if yy >= 1 and yy <= sh and x <= sw then
+      screen.setCursorPos(math.max(1, x), yy)
+      screen.write(string.sub(line, 1, math.min(w, sw - x + 1)))
+    end
+  end
+  screen.setBackgroundColor(colors.black)
+end
+
+local function centerInBox(x, y, w, text, fg, bg)
+  local s = tostring(text)
+  if #s > w then s = string.sub(s, 1, w) end
+  local tx = x + math.floor((w - #s) / 2)
+  writeAt(tx, y, s, fg, bg)
+end
+
+local function drawCard(x, y, w, h, title, subtitle, isLine, status)
+  local bg = isLine and colorForStatus(status) or colors.gray
+  local fg = colors.black
+  fillRect(x, y, w, h, bg)
+  centerInBox(x, y + 1, w, title, fg, bg)
+  if subtitle and h >= 4 then
+    centerInBox(x, y + 2, w, subtitle, fg, bg)
+  elseif subtitle and h >= 3 then
+    centerInBox(x, y + 2, w, subtitle, fg, bg)
+  end
+end
+
+local function hLine(x1, x2, y)
+  if x2 < x1 then x1, x2 = x2, x1 end
+  for x = x1, x2 do writeAt(x, y, "-", colors.gray) end
+end
+
+local function vLine(x, y1, y2)
+  if y2 < y1 then y1, y2 = y2, y1 end
+  for y = y1, y2 do writeAt(x, y, "|", colors.gray) end
+end
+
+local function nodeCenter(x, w)
+  return x + math.floor(w / 2)
 end
 
 local function drawMapScreen(d)
   if not mapScreen then return end
   useScreen(mapScreen)
   clearScreen()
+
   local w, h = size()
+  local cardW = math.max(12, math.min(20, math.floor(w / 5)))
+  local cardH = 3
   local cx = math.floor(w / 2)
-  local y = 3
 
   writeAt(2, 1, "FLOW MAP", colors.yellow)
   writeAt(math.max(2, w - #d.state - 1), 1, d.state, d.state == "RUNNING" and colors.lime or colors.orange)
 
-  centerText(cx, y, "COBBLE GENERATOR", true, d.lines.generator)
-  writeAt(cx, y + 1, "v", colors.gray)
-  centerText(cx, y + 2, "RAW COBBLE", false)
+  local topY = math.max(3, math.floor((h - 25) / 2) + 2)
+  local yGen = topY
+  local yRaw = topY + 5
+  local yLines = topY + 10
+  local yBuffer = topY + 15
+  local yFinal = topY + 20
 
-  writeAt(cx - 18, y + 3, "/", colors.gray)
-  writeAt(cx, y + 3, "|", colors.gray)
-  writeAt(cx + 18, y + 3, "\\", colors.gray)
+  local xGen = cx - math.floor(cardW / 2)
+  local xRaw = xGen
+  local xIron = 4
+  local xQuartz = cx - math.floor(cardW / 2)
+  local xCobble = w - cardW - 4
+  local xBuffer = xRaw
+  local xDiorite = math.max(4, cx - cardW - 14)
+  local xAlloy = math.min(w - cardW - 18, cx + 5)
+  local xOutput = w - cardW - 4
 
-  centerText(cx - 24, y + 4, "IRON", true, d.lines.iron)
-  centerText(cx, y + 4, "QUARTZ", true, d.lines.quartz)
-  centerText(cx + 24, y + 4, "COBBLE", true, d.lines.cobble)
+  local cGen = nodeCenter(xGen, cardW)
+  local cRaw = nodeCenter(xRaw, cardW)
+  local cIron = nodeCenter(xIron, cardW)
+  local cQuartz = nodeCenter(xQuartz, cardW)
+  local cCobble = nodeCenter(xCobble, cardW)
+  local cBuffer = nodeCenter(xBuffer, cardW)
+  local cDiorite = nodeCenter(xDiorite, cardW)
+  local cAlloy = nodeCenter(xAlloy, cardW)
+  local cOutput = nodeCenter(xOutput, cardW)
 
-  writeAt(cx - 18, y + 5, "\\", colors.gray)
-  writeAt(cx, y + 5, "|", colors.gray)
-  writeAt(cx + 18, y + 5, "/", colors.gray)
+  drawCard(xGen, yGen, cardW, cardH, "COBBLE", "GENERATOR", true, d.lines.generator)
+  vLine(cGen, yGen + cardH, yRaw - 1)
+  writeAt(cRaw, yRaw - 1, "v", colors.gray)
+  drawCard(xRaw, yRaw, cardW, cardH, "RAW", "COBBLE", false)
 
-  centerText(cx, y + 6, "MAIN BUFFER", false)
+  local busY1 = yRaw + cardH + 1
+  vLine(cRaw, yRaw + cardH, busY1)
+  hLine(cIron, cCobble, busY1)
+  vLine(cIron, busY1, yLines - 1)
+  vLine(cQuartz, busY1, yLines - 1)
+  vLine(cCobble, busY1, yLines - 1)
+  writeAt(cIron, yLines - 1, "v", colors.gray)
+  writeAt(cQuartz, yLines - 1, "v", colors.gray)
+  writeAt(cCobble, yLines - 1, "v", colors.gray)
 
-  writeAt(cx - 13, y + 7, "/", colors.gray)
-  writeAt(cx + 13, y + 7, "\\", colors.gray)
+  drawCard(xIron, yLines, cardW, cardH, "IRON", "NUGGETS", true, d.lines.iron)
+  drawCard(xQuartz, yLines, cardW, cardH, "QUARTZ", "LINE", true, d.lines.quartz)
+  drawCard(xCobble, yLines, cardW, cardH, "COBBLE", "FEED", true, d.lines.cobble)
 
-  centerText(cx - 21, y + 8, "DIORITE", true, d.lines.diorite)
-  writeAt(cx - 11, y + 8, "---------->", colors.gray)
-  centerText(cx + 15, y + 8, "ALLOY", true, d.lines.alloy)
-  writeAt(cx + 23, y + 8, "->", colors.gray)
-  centerText(cx + 32, y + 8, "OUTPUT", false)
+  local busY2 = yLines + cardH + 1
+  vLine(cIron, yLines + cardH, busY2)
+  vLine(cQuartz, yLines + cardH, busY2)
+  vLine(cCobble, yLines + cardH, busY2)
+  hLine(cIron, cCobble, busY2)
+  vLine(cBuffer, busY2, yBuffer - 1)
+  writeAt(cBuffer, yBuffer - 1, "v", colors.gray)
+  drawCard(xBuffer, yBuffer, cardW, cardH, "MAIN", "BUFFER", false)
 
-  local legendY = h - 4
-  if legendY > y + 9 then
-    writeAt(2, legendY, "LEGEND", colors.yellow)
-    drawLineBox(2, legendY + 1, "RUNNING", "RUNNING")
-    drawLineBox(14, legendY + 1, "STOPPED", "STOPPED")
-    drawStorageBox(27, legendY + 1, "STORAGE")
+  local busY3 = yBuffer + cardH + 1
+  vLine(cBuffer, yBuffer + cardH, busY3)
+  hLine(cDiorite, cAlloy, busY3)
+  vLine(cDiorite, busY3, yFinal - 1)
+  vLine(cAlloy, busY3, yFinal - 1)
+  writeAt(cDiorite, yFinal - 1, "v", colors.gray)
+  writeAt(cAlloy, yFinal - 1, "v", colors.gray)
+
+  drawCard(xDiorite, yFinal, cardW, cardH, "DIORITE", "LINE", true, d.lines.diorite)
+  drawCard(xAlloy, yFinal, cardW, cardH, "ALLOY", "LINE", true, d.lines.alloy)
+  drawCard(xOutput, yFinal, cardW, cardH, "OUTPUT", "VAULT", false)
+
+  hLine(xDiorite + cardW, xAlloy - 1, yFinal + 1)
+  writeAt(xAlloy - 1, yFinal + 1, ">", colors.gray)
+  hLine(xAlloy + cardW, xOutput - 1, yFinal + 1)
+  writeAt(xOutput - 1, yFinal + 1, ">", colors.gray)
+
+  local legendY = h - 3
+  if legendY > yFinal + cardH + 1 then
+    drawCard(2, legendY, 11, 2, "RUN", nil, true, "RUNNING")
+    drawCard(16, legendY, 12, 2, "STOP", nil, true, "STOPPED")
+    drawCard(31, legendY, 14, 2, "STORAGE", nil, false)
   end
 end
 
