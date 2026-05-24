@@ -1,9 +1,13 @@
 -- ANDESITE ALLOY FACTORY UI
 -- CC:Tweaked + Create Item Vaults + Redstone Relay line statuses
+-- Dual monitor layout:
+--   monitor_5 = left 4x4 flow map
+--   monitor_6 = right 5x4 main dashboard
 -- Storage nodes are neutral. Only production lines are colored by relay status.
 
 local CONFIG = {
-  monitor = "monitor_1",
+  mapMonitor = "monitor_5",
+  mainMonitor = "monitor_6",
   monitorScale = 0.5,
   updateInterval = 2,
   redstoneRelay = "redstone_relay_1",
@@ -70,16 +74,34 @@ end
 
 local RAW_COBBLE_STOP_LIMIT = math.floor(VAULTS.rawCobble.capacity * LIMITS.cobbleGeneratorStopRatio + 0.5)
 
+local mainScreen = term
+local mapScreen = nil
 local screen = term
 local relay = nil
 
-local function setupScreen()
-  if CONFIG.monitor and peripheral.isPresent(CONFIG.monitor) then
-    screen = peripheral.wrap(CONFIG.monitor)
-    if screen.setTextScale then screen.setTextScale(CONFIG.monitorScale) end
-  else
-    screen = term
+------------------------------------------------------------
+-- SCREEN SETUP
+------------------------------------------------------------
+
+local function wrapMonitor(name)
+  if name and peripheral.isPresent(name) then
+    local p = peripheral.wrap(name)
+    if p and p.setTextScale then
+      p.setTextScale(CONFIG.monitorScale)
+    end
+    return p
   end
+  return nil
+end
+
+local function setupScreens()
+  mainScreen = wrapMonitor(CONFIG.mainMonitor) or term
+  mapScreen = wrapMonitor(CONFIG.mapMonitor)
+  screen = mainScreen
+end
+
+local function useScreen(target)
+  screen = target or mainScreen or term
 end
 
 local function setupRelay()
@@ -90,15 +112,15 @@ local function setupRelay()
   end
 end
 
+local function size()
+  return screen.getSize()
+end
+
 local function clearScreen()
   screen.setBackgroundColor(colors.black)
   screen.setTextColor(colors.white)
   screen.clear()
   screen.setCursorPos(1, 1)
-end
-
-local function size()
-  return screen.getSize()
 end
 
 local function clearLine(y)
@@ -109,12 +131,22 @@ local function clearLine(y)
 end
 
 local function writeAt(x, y, text, fg, bg)
+  local w, h = size()
+  if x < 1 or y < 1 or x > w or y > h then return end
+  local s = tostring(text)
+  if x + #s - 1 > w then
+    s = string.sub(s, 1, w - x + 1)
+  end
   screen.setBackgroundColor(bg or colors.black)
   screen.setTextColor(fg or colors.white)
   screen.setCursorPos(x, y)
-  screen.write(tostring(text))
+  screen.write(s)
   screen.setBackgroundColor(colors.black)
 end
+
+------------------------------------------------------------
+-- FORMAT / COLORS
+------------------------------------------------------------
 
 local function fmt(n)
   n = tonumber(n) or 0
@@ -210,6 +242,10 @@ local function drawLineBox(x, y, text, status)
   writeAt(x, y, " " .. text .. " ", colors.black, colorForStatus(status))
 end
 
+------------------------------------------------------------
+-- DATA
+------------------------------------------------------------
+
 local function readVault(vault)
   local data = {
     ok = false,
@@ -299,38 +335,117 @@ local function getOverall(alloyLine, genLine, cobbleLine, quartzLine, ironLine, 
   return "RUNNING"
 end
 
-local function drawFlowMap(y, s)
-  for i = 0, 8 do clearLine(y + i) end
+local function buildData()
+  setupRelay()
 
-  drawLineBox(37, y, "COBBLE GENERATOR", s.generator)
-  writeAt(46, y + 1, "v", colors.gray)
-  drawStorageBox(39, y + 2, "RAW COBBLE")
+  local raw = readVault(VAULTS.rawCobble)
+  local buffer = readVault(VAULTS.craftBuffer)
+  local dioriteVault = readVault(VAULTS.diorite)
+  local alloyVault = readVault(VAULTS.alloy)
 
-  writeAt(18, y + 3, "/", colors.gray)
-  writeAt(47, y + 3, "|", colors.gray)
-  writeAt(75, y + 3, "\\", colors.gray)
+  local rawCobble = countItem(raw, ID.cobble)
+  local bufferCobble = countItem(buffer, ID.cobble)
+  local bufferQuartz = countItem(buffer, ID.quartz)
+  local bufferIron = countItem(buffer, ID.ironNugget)
+  local diorite = countItem(dioriteVault, ID.diorite)
+  local alloy = countItem(alloyVault, ID.alloy)
 
-  drawLineBox(3, y + 4, "IRON NUGGETS LINE", s.iron)
-  drawLineBox(35, y + 4, "QUARTZ GENERATION", s.quartz)
-  drawLineBox(66, y + 4, "COBBLE TO BUFFER", s.cobble)
+  local lines = {
+    alloy = lineStatus("alloy"),
+    generator = lineStatus("cobbleGenerator"),
+    cobble = lineStatus("cobbleLine"),
+    quartz = lineStatus("quartzLine"),
+    iron = lineStatus("ironLine"),
+    diorite = lineStatus("dioriteLine"),
+  }
 
-  writeAt(22, y + 5, "\\", colors.gray)
-  writeAt(47, y + 5, "|", colors.gray)
-  writeAt(73, y + 5, "/", colors.gray)
+  local need = bottleneck(bufferCobble, bufferQuartz, bufferIron)
 
-  drawStorageBox(35, y + 6, "MAIN BUFFER")
-
-  writeAt(37, y + 7, "/", colors.gray)
-  writeAt(57, y + 7, "\\", colors.gray)
-
-  drawLineBox(14, y + 8, "DIORITE LINE", s.diorite)
-  writeAt(31, y + 8, "---------->", colors.gray)
-  drawLineBox(45, y + 8, "ANDESITE ALLOY", s.alloy)
-  writeAt(64, y + 8, "->", colors.gray)
-  drawStorageBox(68, y + 8, "OUTPUT")
-
-  return y + 9
+  return {
+    raw = raw,
+    buffer = buffer,
+    dioriteVault = dioriteVault,
+    alloyVault = alloyVault,
+    rawCobble = rawCobble,
+    bufferCobble = bufferCobble,
+    bufferQuartz = bufferQuartz,
+    bufferIron = bufferIron,
+    diorite = diorite,
+    alloy = alloy,
+    readyAlloy = possibleReadyAlloy(bufferCobble, diorite, bufferIron),
+    fullChainAlloy = possibleFullChainAlloy(bufferCobble, bufferQuartz, bufferIron),
+    bottleneck = need,
+    lines = lines,
+    state = getOverall(lines.alloy, lines.generator, lines.cobble, lines.quartz, lines.iron, need),
+  }
 end
+
+------------------------------------------------------------
+-- MAP SCREEN
+------------------------------------------------------------
+
+local function drawMapBoxCentered(cx, y, text, isLine, status)
+  local label = " " .. text .. " "
+  local x = math.floor(cx - #label / 2)
+  if isLine then
+    drawLineBox(x, y, text, status)
+  else
+    drawStorageBox(x, y, text)
+  end
+end
+
+local function drawMapScreen(d)
+  if not mapScreen then return end
+  useScreen(mapScreen)
+  clearScreen()
+  local w, h = size()
+
+  writeAt(2, 1, "FLOW MAP", colors.yellow)
+  writeAt(math.max(2, w - 13), 1, d.state, d.state == "RUNNING" and colors.lime or colors.orange)
+
+  local cx = math.floor(w / 2)
+  local y = 3
+
+  drawMapBoxCentered(cx, y, "COBBLE GENERATOR", true, d.lines.generator)
+  writeAt(cx, y + 1, "v", colors.gray)
+  drawMapBoxCentered(cx, y + 2, "RAW COBBLE", false)
+
+  writeAt(cx - 18, y + 3, "/", colors.gray)
+  writeAt(cx, y + 3, "|", colors.gray)
+  writeAt(cx + 18, y + 3, "\\", colors.gray)
+
+  drawMapBoxCentered(cx - 24, y + 4, "IRON NUGGETS", true, d.lines.iron)
+  drawMapBoxCentered(cx, y + 4, "QUARTZ", true, d.lines.quartz)
+  drawMapBoxCentered(cx + 24, y + 4, "COBBLE", true, d.lines.cobble)
+
+  writeAt(cx - 18, y + 5, "\\", colors.gray)
+  writeAt(cx, y + 5, "|", colors.gray)
+  writeAt(cx + 18, y + 5, "/", colors.gray)
+
+  drawMapBoxCentered(cx, y + 6, "MAIN BUFFER", false)
+
+  writeAt(cx - 12, y + 7, "/", colors.gray)
+  writeAt(cx + 12, y + 7, "\\", colors.gray)
+
+  drawMapBoxCentered(cx - 20, y + 8, "DIORITE LINE", true, d.lines.diorite)
+  writeAt(cx - 9, y + 8, "---------->", colors.gray)
+  drawMapBoxCentered(cx + 15, y + 8, "ALLOY", true, d.lines.alloy)
+  writeAt(cx + 24, y + 8, "->", colors.gray)
+  drawMapBoxCentered(cx + 34, y + 8, "OUTPUT", false)
+
+  local bottomY = h - 5
+  if bottomY > y + 10 then
+    writeAt(2, bottomY, "LEGEND", colors.yellow)
+    drawLineBox(2, bottomY + 1, "RUNNING", "RUNNING")
+    drawLineBox(14, bottomY + 1, "STOPPED", "STOPPED")
+    drawStorageBox(27, bottomY + 1, "STORAGE")
+    writeAt(2, bottomY + 3, "Red = stopped by relay signal", colors.gray)
+  end
+end
+
+------------------------------------------------------------
+-- MAIN DASHBOARD SCREEN
+------------------------------------------------------------
 
 local function drawDebugVault(y, vault)
   local h = ({ size() })[2]
@@ -356,34 +471,8 @@ local function drawDebugVault(y, vault)
   return y
 end
 
-local function drawDashboard()
-  setupRelay()
-
-  local raw = readVault(VAULTS.rawCobble)
-  local buffer = readVault(VAULTS.craftBuffer)
-  local dioriteVault = readVault(VAULTS.diorite)
-  local alloyVault = readVault(VAULTS.alloy)
-
-  local rawCobble = countItem(raw, ID.cobble)
-  local bufferCobble = countItem(buffer, ID.cobble)
-  local bufferQuartz = countItem(buffer, ID.quartz)
-  local bufferIron = countItem(buffer, ID.ironNugget)
-  local diorite = countItem(dioriteVault, ID.diorite)
-  local alloy = countItem(alloyVault, ID.alloy)
-
-  local readyAlloy = possibleReadyAlloy(bufferCobble, diorite, bufferIron)
-  local fullChainAlloy = possibleFullChainAlloy(bufferCobble, bufferQuartz, bufferIron)
-  local need = bottleneck(bufferCobble, bufferQuartz, bufferIron)
-
-  local alloyLine = lineStatus("alloy")
-  local generatorLine = lineStatus("cobbleGenerator")
-  local cobbleLine = lineStatus("cobbleLine")
-  local quartzLine = lineStatus("quartzLine")
-  local ironLine = lineStatus("ironLine")
-  local dioriteLine = lineStatus("dioriteLine")
-
-  local state = getOverall(alloyLine, generatorLine, cobbleLine, quartzLine, ironLine, need)
-
+local function drawMainScreen(d)
+  useScreen(mainScreen)
   clearScreen()
   local w, h = size()
   local timeText = textutils.formatTime(os.time(), true)
@@ -391,73 +480,60 @@ local function drawDashboard()
   writeAt(2, 1, "ANDESITE ALLOY FACTORY", colors.cyan)
   writeAt(math.max(2, w - #timeText - 1), 1, timeText, colors.gray)
   writeAt(2, 2, "Status:", colors.white)
-  writeAt(11, 2, state, state == "RUNNING" and colors.lime or colors.orange)
+  writeAt(11, 2, d.state, d.state == "RUNNING" and colors.lime or colors.orange)
   writeAt(2, 3, "Recipe: 3 Cobble + 2 Quartz + 2 Iron Nugget = 1 Alloy", colors.gray)
   writeAt(2, 4, "Relay: " .. (relay and CONFIG.redstoneRelay or "not connected"), relay and colors.green or colors.red)
 
   local y = 6
-  drawTitle(y, "FLOW MAP")
-  y = y + 1
-  y = drawFlowMap(y, {
-    generator = generatorLine,
-    cobble = cobbleLine,
-    quartz = quartzLine,
-    iron = ironLine,
-    diorite = dioriteLine,
-    alloy = alloyLine,
-  })
-  y = y + 1
 
-  drawTitle(y, "PRODUCTION LINES - REAL RELAY SIGNALS")
+  drawTitle(y, "PRODUCTION LINES - RELAY SIGNALS")
   y = y + 1
-  drawLineMeter(y, "Andesite Alloy", alloyLine, alloy, LIMITS.alloyStop); y = y + 1
-  drawLineMeter(y, "Cobblestone Generator", generatorLine, rawCobble, RAW_COBBLE_STOP_LIMIT); y = y + 1
-  drawLineMeter(y, "Cobble Line", cobbleLine, bufferCobble, LIMITS.bufferCobbleMax); y = y + 1
-  drawLineMeter(y, "Quartz Line", quartzLine, bufferQuartz, LIMITS.bufferQuartzMax); y = y + 1
-  drawLineMeter(y, "Iron Line", ironLine, bufferIron, LIMITS.bufferIronMax); y = y + 1
-  drawLineMeter(y, "Diorite Line", dioriteLine, diorite, LIMITS.dioriteMax); y = y + 2
+  drawLineMeter(y, "Andesite Alloy", d.lines.alloy, d.alloy, LIMITS.alloyStop); y = y + 1
+  drawLineMeter(y, "Cobblestone Generator", d.lines.generator, d.rawCobble, RAW_COBBLE_STOP_LIMIT); y = y + 1
+  drawLineMeter(y, "Cobble Line", d.lines.cobble, d.bufferCobble, LIMITS.bufferCobbleMax); y = y + 1
+  drawLineMeter(y, "Quartz Line", d.lines.quartz, d.bufferQuartz, LIMITS.bufferQuartzMax); y = y + 1
+  drawLineMeter(y, "Iron Line", d.lines.iron, d.bufferIron, LIMITS.bufferIronMax); y = y + 1
+  drawLineMeter(y, "Diorite Line", d.lines.diorite, d.diorite, LIMITS.dioriteMax); y = y + 2
 
   drawTitle(y, "MAIN PRODUCT")
   y = y + 1
-  drawStorageMeter(y, "Alloy Ready", alloy, LIMITS.alloyStop, colors.cyan); y = y + 1
+  drawStorageMeter(y, "Alloy Ready", d.alloy, LIMITS.alloyStop, colors.cyan); y = y + 1
   clearLine(y)
   writeAt(2, y, "Can craft now:", colors.white)
-  writeAt(18, y, fmt(readyAlloy), colors.lime)
+  writeAt(18, y, fmt(d.readyAlloy), colors.lime)
   writeAt(32, y, "Full chain:", colors.white)
-  writeAt(45, y, fmt(fullChainAlloy), colors.lightBlue)
+  writeAt(45, y, fmt(d.fullChainAlloy), colors.lightBlue)
   writeAt(58, y, "Bottleneck:", colors.white)
-  writeAt(70, y, need, colors.orange)
+  writeAt(70, y, d.bottleneck, colors.orange)
   y = y + 2
 
   drawTitle(y, "VAULTS")
   y = y + 1
-  drawStorageMeter(y, VAULTS.rawCobble.label, raw.total, raw.capacity, colors.lightGray); y = y + 1
-  drawStorageMeter(y, VAULTS.craftBuffer.label, buffer.total, buffer.capacity, colors.lightGray); y = y + 1
-  drawStorageMeter(y, VAULTS.diorite.label, dioriteVault.total, dioriteVault.capacity, colors.lightGray); y = y + 1
-  drawStorageMeter(y, VAULTS.alloy.label, alloyVault.total, alloyVault.capacity, colors.lightGray); y = y + 2
+  drawStorageMeter(y, VAULTS.rawCobble.label, d.raw.total, d.raw.capacity, colors.lightGray); y = y + 1
+  drawStorageMeter(y, VAULTS.craftBuffer.label, d.buffer.total, d.buffer.capacity, colors.lightGray); y = y + 1
+  drawStorageMeter(y, VAULTS.diorite.label, d.dioriteVault.total, d.dioriteVault.capacity, colors.lightGray); y = y + 1
+  drawStorageMeter(y, VAULTS.alloy.label, d.alloyVault.total, d.alloyVault.capacity, colors.lightGray); y = y + 2
 
   drawTitle(y, "BUFFER CONTENT")
   y = y + 1
-  drawStorageMeter(y, "Cobble", bufferCobble, LIMITS.bufferCobbleMax, colors.lightBlue); y = y + 1
-  drawStorageMeter(y, "Quartz", bufferQuartz, LIMITS.bufferQuartzMax, colors.purple); y = y + 1
-  drawStorageMeter(y, "Iron Nugget", bufferIron, LIMITS.bufferIronMax, colors.orange); y = y + 2
+  drawStorageMeter(y, "Cobble", d.bufferCobble, LIMITS.bufferCobbleMax, colors.lightBlue); y = y + 1
+  drawStorageMeter(y, "Quartz", d.bufferQuartz, LIMITS.bufferQuartzMax, colors.purple); y = y + 1
+  drawStorageMeter(y, "Iron Nugget", d.bufferIron, LIMITS.bufferIronMax, colors.orange); y = y + 2
 
   if CONFIG.showDebugExtraItems and y <= h - 2 then
     local oldY = y
-    y = drawDebugVault(y, raw)
-    y = drawDebugVault(y, buffer)
-    y = drawDebugVault(y, dioriteVault)
-    y = drawDebugVault(y, alloyVault)
-    if y ~= oldY then
-      writeAt(2, oldY - 1, "DEBUG: EXTRA ITEMS", colors.yellow)
-    end
+    y = drawDebugVault(y, d.raw)
+    y = drawDebugVault(y, d.buffer)
+    y = drawDebugVault(y, d.dioriteVault)
+    y = drawDebugVault(y, d.alloyVault)
+    if y ~= oldY then writeAt(2, oldY - 1, "DEBUG: EXTRA ITEMS", colors.yellow) end
   end
 
   local errors = {}
-  if not raw.ok then table.insert(errors, raw.name .. " " .. tostring(raw.error)) end
-  if not buffer.ok then table.insert(errors, buffer.name .. " " .. tostring(buffer.error)) end
-  if not dioriteVault.ok then table.insert(errors, dioriteVault.name .. " " .. tostring(dioriteVault.error)) end
-  if not alloyVault.ok then table.insert(errors, alloyVault.name .. " " .. tostring(alloyVault.error)) end
+  if not d.raw.ok then table.insert(errors, d.raw.name .. " " .. tostring(d.raw.error)) end
+  if not d.buffer.ok then table.insert(errors, d.buffer.name .. " " .. tostring(d.buffer.error)) end
+  if not d.dioriteVault.ok then table.insert(errors, d.dioriteVault.name .. " " .. tostring(d.dioriteVault.error)) end
+  if not d.alloyVault.ok then table.insert(errors, d.alloyVault.name .. " " .. tostring(d.alloyVault.error)) end
 
   clearLine(h)
   if #errors > 0 then
@@ -465,18 +541,29 @@ local function drawDashboard()
   elseif not relay then
     writeAt(2, h, "ERROR: Relay not connected. Expected " .. CONFIG.redstoneRelay, colors.red)
   else
-    writeAt(2, h, "All vaults connected | Storages neutral | Line status = relay signals", colors.green)
+    writeAt(2, h, "All vaults connected | Main: " .. CONFIG.mainMonitor .. " | Map: " .. CONFIG.mapMonitor, colors.green)
   end
 end
 
-setupScreen()
+------------------------------------------------------------
+-- MAIN LOOP
+------------------------------------------------------------
+
+setupScreens()
 
 while true do
-  local ok, err = pcall(drawDashboard)
+  local ok, err = pcall(function()
+    local d = buildData()
+    drawMapScreen(d)
+    drawMainScreen(d)
+  end)
+
   if not ok then
+    useScreen(mainScreen)
     clearScreen()
     writeAt(2, 1, "DASHBOARD ERROR", colors.red)
     writeAt(2, 3, tostring(err), colors.white)
   end
+
   sleep(CONFIG.updateInterval)
 end
