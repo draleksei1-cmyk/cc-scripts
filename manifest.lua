@@ -21,5 +21,11 @@ return {
     path = "programs/shaft.lua",
     target = "shaft",
     desc = "Vertical shaft turtle"
+  },
+
+  floor = {
+    path = "programs/floor.lua",
+    target = "floor",
+    desc = "Stone bricks floor replacer turtle"
   }
 }
