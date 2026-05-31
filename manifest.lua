@@ -11,6 +11,12 @@ return {
     desc = "Tunnel mining turtle"
   },
 
+  snake = {
+    path = "programs/snake.lua",
+    target = "snake",
+    desc = "Snake tunnel mining turtle"
+  },
+
   quarry = {
     path = "programs/quarry.lua",
     target = "quarry",
